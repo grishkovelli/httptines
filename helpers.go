@@ -14,9 +14,6 @@ import (
 )
 
 func doRequest(target string, s *server, timeout int, agent string) (*bytes.Reader, error) {
-	startAt := s.startRequest()
-	defer func() { s.finishRequest(startAt) }()
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(timeout))
 	defer cancel()
 

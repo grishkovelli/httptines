@@ -10,8 +10,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+var sortProxiesDirection int32
 
 //  ██████╗  █████╗ ██╗      █████╗ ███╗   ██╗ ██████╗███████╗██████╗
 //  ██╔══██╗██╔══██╗██║     ██╔══██╗████╗  ██║██╔════╝██╔════╝██╔══██╗
@@ -94,10 +97,10 @@ func (b *balancer) checkProxies() {
 }
 
 func (b *balancer) check(s *server) error {
-	startAt := s.startRequest()
-	defer s.finishRequest(startAt)
+	startAt := s.registerStart()
+	defer s.registerFinish(startAt)
 
-	_, err := doRequest(b.w.TestTarget, s, b.w.ProxyTimeout, b.w.userAgent())
+	_, err := doRequest(b.w.testTarget, s, b.w.ProxyTimeout, b.w.userAgent())
 	return err
 }
 
@@ -114,18 +117,6 @@ func (b *balancer) run(runup chan<- struct{}) {
 			close(runup)
 		}
 		<-ticker.C
-	}
-}
-
-func (b *balancer) removeServer(s *server) {
-	b.m.Lock()
-	defer b.m.Unlock()
-
-	for i := range b.alive {
-		if b.alive[i].url == s.url {
-			b.alive = append(b.alive[:i], b.alive[i+1:]...)
-			break
-		}
 	}
 }
 
@@ -151,23 +142,42 @@ func (b *balancer) merge(s []*server) {
 		}
 	}
 
-	computeCapacity(b.w.Parallel, servers)
-
-	fmt.Printf("alive=%d\n", len(servers))
 	b.alive = servers
 }
 
 func (b *balancer) nextServer() *server {
 	b.m.Lock()
 	defer b.m.Unlock()
+	computeCapacity(b.w.Goroutines, b.alive)
+	sortByDirection(b.alive)
+	return bestServer(b.alive)
+}
 
-	computeCapacity(b.w.Parallel, b.alive)
+func (b *balancer) analyzeServer(s *server) {
+	b.m.Lock()
+	s.m.Lock()
+	defer b.m.Unlock()
+	defer s.m.Unlock()
 
-	sort.Slice(b.alive, func(i, j int) bool {
-		return b.alive[i].weight > b.alive[j].weight
+	s.negative++
+	i := slices.IndexFunc(b.alive, func(i *server) bool {
+		return i.url == s.url
 	})
 
-	return bestServer(b.alive)
+	mult3x := (s.positive == 0 && s.negative >= 3) || (s.positive > 0 && (s.negative/s.positive) >= 3)
+	if i >= 0 && mult3x {
+		b.alive = append(b.alive[:i], b.alive[i+1:]...)
+		return
+	}
+
+	switch {
+	case s.limit > 0:
+		s.limit--
+	case s.requests > 0:
+		s.limit = int(s.requests - 1)
+	default:
+		s.limit = 0
+	}
 }
 
 //  ███████╗███████╗██████╗ ██╗   ██╗███████╗██████╗
@@ -181,24 +191,26 @@ func (b *balancer) nextServer() *server {
 type server struct {
 	url      *url.URL
 	weight   float64
-	capacity int32
-	latency  int64
-	requests int32
+	capacity int
+	latency  int
+	requests int
+	limit    int
+	positive int
+	negative int
 	m        sync.RWMutex
 }
 
-func (s *server) startRequest() time.Time {
+func (s *server) registerStart() time.Time {
 	s.m.Lock()
 	defer s.m.Unlock()
 	s.requests++
 	return time.Now()
 }
 
-func (s *server) finishRequest(finishAt time.Time) {
+func (s *server) registerFinish(t time.Time) {
 	s.m.Lock()
 	defer s.m.Unlock()
-	dur := time.Since(finishAt).Milliseconds()
-	s.latency = (dur + s.latency) / int64(s.requests)
+	s.latency = int(time.Since(t).Milliseconds())
 	s.requests--
 }
 
@@ -206,7 +218,7 @@ func (s *server) String() string {
 	s.m.RLock()
 	defer s.m.RUnlock()
 
-	return fmt.Sprintf("L=%d R=%d C=%d %s", s.latency, s.requests, s.capacity, s.url)
+	return fmt.Sprintf("L=%d R=%d C=%d Lim=%d p=%d n=%d %s", s.latency, s.requests, s.capacity, s.limit, s.positive, s.negative, s.url)
 }
 
 //  ██╗  ██╗███████╗██╗     ██████╗ ███████╗██████╗ ███████╗
@@ -216,6 +228,15 @@ func (s *server) String() string {
 //  ██║  ██║███████╗███████╗██║     ███████╗██║  ██║███████║
 //  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝
 //
+
+func sortByDirection(s []*server) {
+	if sortProxiesDirection%2 == 0 {
+		sort.Slice(s, func(i, j int) bool { return s[i].weight < s[j].weight })
+	} else {
+		sort.Slice(s, func(i, j int) bool { return s[i].weight > s[j].weight })
+	}
+	atomic.AddInt32(&sortProxiesDirection, 1)
+}
 
 func computWeight(servers []*server) float64 {
 	totalWeight := 0.0
@@ -234,7 +255,11 @@ func computeCapacity(requests int, servers []*server) {
 	for _, s := range servers {
 		s.m.Lock()
 		pct := s.weight / totalWeight
-		s.capacity = int32(math.Round(pct * float64(requests)))
+		if s.limit > 0 {
+			s.capacity = s.limit
+		} else {
+			s.capacity = int(math.Round(pct * float64(requests)))
+		}
 		s.m.Unlock()
 	}
 }
@@ -243,18 +268,15 @@ func bestServer(servers []*server) *server {
 	var bs *server
 
 	for _, s := range servers {
-		s.m.RLock()
+		s.m.Lock()
 		if s.capacity > s.requests {
+			s.requests++
 			bs = s
+			s.m.Unlock()
 			break
 		}
-		s.m.RUnlock()
+		s.m.Unlock()
 	}
 
-	if bs == nil {
-		return nil
-	}
-
-	defer bs.m.RUnlock()
 	return bs
 }
