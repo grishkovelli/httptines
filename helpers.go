@@ -1,37 +1,12 @@
 package httptines
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
-	"time"
 )
-
-func doRequest(target string, s *server, timeout int, agent string) (*bytes.Reader, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(timeout))
-	defer cancel()
-
-	client := &http.Client{}
-	client.Transport = &http.Transport{Proxy: http.ProxyURL(s.url)}
-
-	req, _ := http.NewRequestWithContext(ctx, "GET", target, nil)
-	req.Header.Set("User-Agent", agent)
-
-	resp, err := client.Do(req)
-	if resp == nil || err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	b, err := io.ReadAll(resp.Body)
-	return bytes.NewReader(b), err
-}
 
 func setDefaultValues(obj interface{}) {
 	tof := reflect.TypeOf(obj).Elem()
