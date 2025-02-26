@@ -1,5 +1,5 @@
 function connectWebSocket() {
-  const ws = new WebSocket(wsHost);
+  const ws = new WebSocket(wsURL);
 
   ws.onopen = function (evt) {
     handleLog(`${now()} connected`);
@@ -29,26 +29,30 @@ function connectWebSocket() {
 
 function handleStat(j) {
   const t = document.getElementById("balancer");
-  const eta = Math.round((j.targets - j.processed) / j.RPM);
+
+  if (!j?.balancer) {
+    return;
+  }
+
+  const { targets, waiting, balancer: {
+    alive, proxies, rpm, positive
+  } } = j;
+  const eta = Math.round((targets - positive) / rpm);
 
   const progress = `
           <div>${Math.round(
-            (j.processed * 100) / j.targets
+            (positive * 100) / targets
           )}% / ~${eta}min. </div>
-          <div>${j.processed} / ${j.targets}</div>
+          <div>${positive} / ${targets}</div>
         `;
 
   document.getElementById("progress").innerHTML = progress;
-  document.getElementById("rpm").textContent = `${j.RPM}`;
-  document.getElementById("waiting").textContent = `${j.waiting}`;
+  document.getElementById("rpm").textContent = `${rpm}`;
+  document.getElementById("waiting").textContent = `${waiting}`;
 
-  if (j.balancer?.alive) {
-    document.getElementById(
-      "proxies"
-    ).textContent = `${j.balancer.alive.length} / ${j.balancer.proxies}`;
-  }
+  if (alive) {
+    document.getElementById('proxies').textContent = `${alive.length} / ${proxies}`;
 
-  if (j.balancer?.alive) {
     t.innerHTML = `
             <tr>
               <th></th>
@@ -61,19 +65,19 @@ function handleStat(j) {
               <th>Negative</th>
             </tr>
           `;
-    j.balancer.alive
+    alive
       .sort((a, b) => a.latency - b.latency)
       .forEach(
         (
           {
             url,
-            weight,
             capacity,
             latency,
             requests,
             limit,
             positive,
             negative,
+            negativePct,
           },
           idx
         ) => {
@@ -89,7 +93,7 @@ function handleStat(j) {
                   <td class="">${requests}</td>
                   <td class="">${limit}</td>
                   <td class="positive">${positive}</td>
-                  <td class="negative">${negative}</td>
+                  <td class="negative">${negativePct}% (${negative})</td>
                 </tr>
               `;
           t.appendChild(row);
@@ -105,6 +109,7 @@ function handleLog(text) {
   l.insertBefore(p, l.firstChild);
 }
 
+// Returns the current time
 function now() {
   let now = new Date();
 

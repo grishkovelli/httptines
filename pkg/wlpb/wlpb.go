@@ -1,8 +1,6 @@
 package wlpb
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,8 +15,11 @@ import (
 	"time"
 )
 
+// toggleSortProxies is an atomic counter used to alternate the sorting direction of proxies
 var toggleSortProxies int32
-var writeLogFunc func(string)
+
+// wlog is a function variable that holds the logging function provided by the user
+var wlog func(string)
 
 //  ██████╗  █████╗ ██╗      █████╗ ███╗   ██╗ ██████╗███████╗██████╗
 //  ██╔══██╗██╔══██╗██║     ██╔══██╗████╗  ██║██╔════╝██╔════╝██╔══██╗
@@ -28,49 +29,39 @@ var writeLogFunc func(string)
 //  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝╚══════╝╚═╝  ╚═╝
 //
 
+// Balancer represents a proxy load balancer that manages multiple proxy servers
+// and distributes requests among them based on their performance and capacity.
 type Balancer struct {
-	Requests    int                 `json:"requests"`
-	Periodicity int                 `json:"periodicity"`
-	Sources     map[string][]string `json:"sources"`
-	TestURL     string              `json:"testURL"`
-	Timeout     int                 `json:"timeout"`
-	UserAgent   string              `json:"userAgent"`
+	// Requests is the total number of concurrent requests the balancer should handle
+	Requests int `json:"requests"`
 
-	alive   []*Server
-	proxies []*url.URL
-	m       sync.RWMutex
+	// Periodicity is the interval in seconds between proxy checks
+	Periodicity int `json:"periodicity"`
+
+	// Sources is a map of proxy schemas to lists of URLs containing proxy addresses
+	Sources map[string][]string `json:"sources"`
+
+	// TestURL is the URL used to test proxy connectivity and performance
+	TestURL string `json:"testURL"`
+
+	// Timeout is the maximum time in seconds to wait for proxy responses
+	Timeout int `json:"timeout"`
+
+	// UserAgent is the User-Agent string to use in proxy requests
+	UserAgent string `json:"userAgent"`
+
+	alive    []*Server    // alive contains the list of currently working proxy servers
+	proxies  []*url.URL   // proxies contains the list of all proxy URLs, working or not
+	positive []time.Time  // positive contains timestamps of successful requests
+	m        sync.RWMutex // m is a mutex for protecting concurrent access to balancer data
 }
 
-func (b *Balancer) Analyze(s *Server) {
-	b.m.Lock()
-	defer b.m.Unlock()
-
-	s.m.Lock()
-	defer s.m.Unlock()
-
-	s.Negative++
-	i := slices.IndexFunc(b.alive, func(i *Server) bool {
-		return i.URL == s.URL
-	})
-
-	mult3x := (s.Positive == 0 && s.Negative >= 3) || (s.Positive > 0 && (s.Negative/s.Positive) >= 3)
-	if i >= 0 && mult3x {
-		b.alive = append(b.alive[:i], b.alive[i+1:]...)
-		return
-	}
-
-	switch {
-	case s.Limit > 0:
-		s.Limit--
-	case s.Requests > 0:
-		s.Limit = s.Requests - 1
-	default:
-		s.Limit = 0
-	}
-}
-
-func (b *Balancer) Run(writeLog func(string)) {
-	writeLogFunc = writeLog
+// Run starts the balancer's main operation loop. It periodically fetches and checks proxies
+// based on the configured periodicity. The function runs indefinitely until stopped.
+// Parameters:
+//   - logFunc: A function that takes a string parameter for logging messages
+func (b *Balancer) Run(logFunc func(string)) {
+	wlog = logFunc
 
 	ticker := time.NewTicker(time.Duration(b.Periodicity) * time.Second)
 	defer ticker.Stop()
@@ -79,7 +70,7 @@ func (b *Balancer) Run(writeLog func(string)) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					writeLogFunc(fmt.Sprintf("recovered: %v", r))
+					wlog(fmt.Sprintf("recovered: %v", r))
 				}
 			}()
 			b.fetchProxies()
@@ -89,6 +80,10 @@ func (b *Balancer) Run(writeLog func(string)) {
 	}
 }
 
+// NextServer returns the most suitable server based on current load balancing criteria.
+// It uses thread-safe operations to compute capacity and sort available servers.
+// Returns:
+//   - *Server: The best available server, or nil if no servers are available
 func (b *Balancer) NextServer() *Server {
 	b.m.Lock()
 	defer b.m.Unlock()
@@ -108,22 +103,33 @@ func (b *Balancer) NextServer() *Server {
 	return bs
 }
 
-func (b *Balancer) Request(target, agent string) (*Response, error, bool) {
+// Request performs an HTTP request through a proxy server
+// Parameters:
+//   - target: The target URL to request
+//   - agent: The User-Agent string to use in the request
+//
+// Returns:
+//   - []byte: The response body
+//   - error: Any error that occurred during the request
+//   - bool: Whether a proxy was available to make the request
+func (b *Balancer) Request(target, agent string) ([]byte, error, bool) {
 	s := b.NextServer()
 	if s == nil {
 		return nil, nil, false
 	}
 
-	r, err := makeRequest(target, agent, b.Timeout, s)
-	if err != nil {
-		b.Analyze(s)
-		return r, err, true
-	} else {
-		s.PositiveUp()
+	body, err := makeRequest(target, agent, b.Timeout, s)
+	if err == nil {
+		// b.updatePositive()
 	}
-	return r, err, true
+
+	return body, err, true
 }
 
+// MarshalJSON implements custom JSON serialization for the Balancer type
+// Returns:
+//   - []byte: JSON representation of the Balancer
+//   - error: Any error during marshaling
 func (b *Balancer) MarshalJSON() ([]byte, error) {
 	b.m.RLock()
 	defer b.m.RUnlock()
@@ -131,38 +137,44 @@ func (b *Balancer) MarshalJSON() ([]byte, error) {
 	type Alias Balancer
 
 	return json.Marshal(&struct {
-		Alive   []*Server `json:"alive"`
-		Proxies int       `json:"proxies"`
+		Alive    []*Server `json:"alive"`
+		Proxies  int       `json:"proxies"`
+		RPM      int       `json:"rpm"`
+		Positive int       `json:"positive"`
 		*Alias
 	}{
-		Alive:   b.alive,
-		Proxies: len(b.proxies),
-		Alias:   (*Alias)(b),
+		Alive:    b.alive,
+		Proxies:  len(b.proxies),
+		RPM:      b.rpm(),
+		Positive: len(b.positive),
+		Alias:    (*Alias)(b),
 	})
 }
 
+// fetchProxies downloads and parses proxy lists from configured sources.
+// It updates the internal proxies slice with new proxy URLs.
 func (b *Balancer) fetchProxies() {
 	var proxies []*url.URL
 
-	writeLogFunc("fetching proxies")
+	wlog("fetching proxies")
 
 	for schema, links := range b.Sources {
 		for _, link := range links {
 			resp, err := http.Get(link)
 			if err != nil {
-				writeLogFunc(fmt.Sprintf("error fetching proxies from %s: %v\n", link, err))
+				wlog(fmt.Sprintf("error fetching proxies from %s: %v\n", link, err))
 				continue
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
-				writeLogFunc(fmt.Sprintf("failed to download proxy list from %s: status %d\n", link, resp.StatusCode))
+				wlog(fmt.Sprintf("failed to download proxy list from %s: status %d\n", link, resp.StatusCode))
 				continue
 			}
 
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				writeLogFunc(fmt.Sprintf("error reading response body from %s: %v\n", link, err))
+				wlog(fmt.Sprintf("error reading response body from %s: %v\n", link, err))
 				continue
 			}
 
@@ -184,13 +196,19 @@ func (b *Balancer) fetchProxies() {
 	b.m.Unlock()
 }
 
+// checkProxies tests all proxies against the configured test URL.
+// It updates the internal alive servers list with working proxies.
 func (b *Balancer) checkProxies() {
-	writeLogFunc(fmt.Sprintf("checking %d proxies", len(b.proxies)))
-
 	var alive []*Server
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
+	if len(b.proxies) == 0 {
+		wlog("no proxies to check")
+		return
+	}
+
+	wlog(fmt.Sprintf("checking %d proxies", len(b.proxies)))
 	for _, proxy := range b.proxies {
 		wg.Add(1)
 		srv := &Server{URL: proxy}
@@ -204,9 +222,13 @@ func (b *Balancer) checkProxies() {
 		}(srv)
 	}
 	wg.Wait()
+
 	b.merge(alive)
 }
 
+// merge combines new working proxies with existing ones while preserving state.
+// Parameters:
+//   - s: Slice of new servers to merge with existing ones
 func (b *Balancer) merge(s []*Server) {
 	b.m.Lock()
 	defer b.m.Unlock()
@@ -230,7 +252,32 @@ func (b *Balancer) merge(s []*Server) {
 	}
 
 	b.alive = servers
-	writeLogFunc(fmt.Sprintf("merged %d alive proxies", len(servers)))
+	wlog(fmt.Sprintf("merged %d alive proxies", len(servers)))
+}
+
+// updatePositive records a successful request timestamp. It used to calculate the requests per minute and total positive requests.
+func (b *Balancer) updatePositive() {
+	b.m.Lock()
+	b.positive = append(b.positive, time.Now())
+	b.m.Unlock()
+}
+
+// rpm calculates the current requests per minute based on successful requests
+// Returns:
+//   - int: Number of successful requests in the last minute
+func (b *Balancer) rpm() int {
+	b.m.RLock()
+	defer b.m.RUnlock()
+
+	rpm, lastMinute := 0, time.Now().Add(-60*time.Second)
+	for i := len(b.positive) - 1; i > 0; i-- {
+		if b.positive[i].Compare(lastMinute) >= 0 {
+			rpm++
+		} else {
+			break
+		}
+	}
+	return rpm
 }
 
 //  ███████╗███████╗██████╗ ██╗   ██╗███████╗██████╗
@@ -241,71 +288,97 @@ func (b *Balancer) merge(s []*Server) {
 //  ╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝
 //
 
+// Server represents a proxy server with its current state and performance metrics
 type Server struct {
-	URL      *url.URL `json:"url"`
-	Weight   float64  `json:"weight"`
-	Capacity int      `json:"capacity"`
-	Latency  int      `json:"latency"`
-	Requests int      `json:"requests"`
-	Limit    int      `json:"limit"`
-	Positive int      `json:"positive"`
-	Negative int      `json:"negative"`
+	// URL is the proxy server's URL
+	URL *url.URL `json:"url"`
 
+	// Weight is the server's computed weight based on performance
+	Weight float64 `json:"-"`
+
+	// Capacity is the maximum number of concurrent requests this server can handle
+	Capacity int `json:"capacity"`
+
+	// Latency is the last measured response time in milliseconds
+	Latency int `json:"latency"`
+
+	// Requests is the current number of active requests
+	Requests int `json:"requests"`
+
+	// Limit is the maximum number of requests allowed (set after failures)
+	Limit int `json:"limit"`
+
+	// Positive is the count of successful requests
+	Positive int `json:"positive"`
+
+	// Negative is the count of failed requests
+	Negative int `json:"negative"`
+
+	// m is a mutex for protecting concurrent access to server data
 	m sync.RWMutex
 }
 
-func (s *Server) PositiveUp() {
-	s.m.Lock()
-	s.Positive++
-	s.m.Unlock()
-}
-
+// MarshalJSON implements custom JSON serialization for the Server type
+// Returns:
+//   - []byte: JSON representation of the Server
+//   - error: Any error during marshaling
 func (s *Server) MarshalJSON() ([]byte, error) {
 	s.m.RLock()
 	defer s.m.RUnlock()
 
 	type Alias Server
 	return json.Marshal(&struct {
-		URL string `json:"url"`
+		URL         string  `json:"url"`
+		NegativePct float64 `json:"negativePct"`
 		*Alias
 	}{
-		URL:   s.URL.Host,
-		Alias: (*Alias)(s),
+		URL:         s.URL.Host,
+		NegativePct: s.negativePct(),
+		Alias:       (*Alias)(s),
 	})
 }
 
-func (s *Server) registerStart() time.Time {
+// RegisterStart marks the beginning of a request and returns the start time
+// Returns:
+//   - time.Time: The timestamp when the request started
+func (s *Server) RegisterStart() time.Time {
 	s.m.Lock()
 	s.Requests++
 	s.m.Unlock()
 	return time.Now()
 }
 
-func (s *Server) registerFinish(startedAt time.Time) time.Time {
-	endedAt := time.Now()
+// RegisterFinish records the completion of a request
+// Parameters:
+//   - startedAt: The timestamp when the request started
+//   - err: Any error that occurred during the request
+func (s *Server) RegisterFinish(startedAt time.Time, err error) {
 	s.m.Lock()
-	s.Latency = int(endedAt.Sub(startedAt).Milliseconds())
+	if err == nil {
+		s.Positive++
+	} else {
+		s.Negative++
+		s.Limit = s.Requests - 1
+	}
 	s.Requests--
+	s.Latency = int(time.Since(startedAt).Milliseconds())
 	s.m.Unlock()
-	return endedAt
 }
 
-//  ██████╗ ███████╗███████╗██████╗  ██████╗ ███╗   ██╗███████╗███████╗
-//  ██╔══██╗██╔════╝██╔════╝██╔══██╗██╔═══██╗████╗  ██║██╔════╝██╔════╝
-//  ██████╔╝█████╗  ███████╗██████╔╝██║   ██║██╔██╗ ██║███████╗█████╗
-//  ██╔══██╗██╔══╝  ╚════██║██╔═══╝ ██║   ██║██║╚██╗██║╚════██║██╔══╝
-//  ██║  ██║███████╗███████║██║     ╚██████╔╝██║ ╚████║███████║███████╗
-//  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═══╝╚══════╝╚══════╝
-//
-
-type Response struct {
-	Body      *bytes.Reader
-	StartedAt time.Time
-	EndedAt   time.Time
+// totalRequests returns the total number of requests handled by the server
+// Returns:
+//   - int: Sum of positive and negative requests
+func (s *Server) totalRequests() int {
+	return s.Positive + s.Negative
 }
 
-func (r *Response) Latency() int64 {
-	return r.EndedAt.Sub(r.StartedAt).Milliseconds()
+// negativePct calculates the percentage of failed requests
+// Returns:
+//   - float64: Percentage of negative requests rounded to nearest integer
+func (s *Server) negativePct() float64 {
+	n := float64(s.Negative)
+	r := float64(s.totalRequests())
+	return math.Round(n / r * 100)
 }
 
 //  ██╗  ██╗███████╗██╗     ██████╗ ███████╗██████╗ ███████╗
@@ -316,16 +389,26 @@ func (r *Response) Latency() int64 {
 //  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝
 //
 
+// sortAliveProxies sorts the servers slice based on their weights.
+// It alternates between ascending and descending order.
+// Parameters:
+//   - s: Slice of servers to sort
 func sortAliveProxies(s []*Server) {
 	if toggleSortProxies%2 == 0 {
-		sort.Slice(s, func(i, j int) bool { return s[i].Weight < s[j].Weight })
-	} else {
 		sort.Slice(s, func(i, j int) bool { return s[i].Weight > s[j].Weight })
+	} else {
+		sort.Slice(s, func(i, j int) bool { return s[i].Weight < s[j].Weight })
 	}
 	atomic.AddInt32(&toggleSortProxies, 1)
 }
 
-func computWeight(servers []*Server) float64 {
+// computeWeight calculates weights for all servers based on their latency
+// Parameters:
+//   - servers: Slice of servers to compute weights for
+//
+// Returns:
+//   - float64: Total weight of all servers
+func computeWeight(servers []*Server) float64 {
 	totalWeight := 0.0
 	for _, s := range servers {
 		s.Weight = 1.0 / float64(s.Latency)
@@ -334,19 +417,29 @@ func computWeight(servers []*Server) float64 {
 	return totalWeight
 }
 
+// computeCapacity distributes the total request capacity among servers
+// Parameters:
+//   - requests: Total number of requests to distribute
+//   - servers: Slice of servers to distribute capacity to
 func computeCapacity(requests int, servers []*Server) {
-	totalWeight := computWeight(servers)
+	totalWeight := computeWeight(servers)
 
 	for _, s := range servers {
 		pct := s.Weight / totalWeight
 		if s.Limit > 0 {
 			s.Capacity = s.Limit
 		} else {
-			s.Capacity = int(math.Round(pct * float64(requests)))
+			s.Capacity = int(math.Max(math.Round(pct*float64(requests)), 1))
 		}
 	}
 }
 
+// bestServer selects the first available server with remaining capacity
+// Parameters:
+//   - servers: Slice of servers to choose from
+//
+// Returns:
+//   - *Server: Best available server or nil if none available
 func bestServer(servers []*Server) *Server {
 	var bs *Server
 	for _, s := range servers {
@@ -358,25 +451,57 @@ func bestServer(servers []*Server) *Server {
 	return bs
 }
 
-func makeRequest(target string, agent string, timeout int, s *Server) (*Response, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*time.Duration(timeout))
-	defer cancel()
-
-	startedAt := s.registerStart()
-	req, _ := http.NewRequestWithContext(ctx, "GET", target, nil)
-	req.Header.Set("User-Agent", agent)
-	client := &http.Client{}
-	client.Transport = &http.Transport{Proxy: http.ProxyURL(s.URL)}
-	rsp, err := client.Do(req)
-	endedAt := s.registerFinish(startedAt)
-
-	r := &Response{nil, startedAt, endedAt}
-	if err != nil {
-		return r, err
+// defaultClient creates an HTTP client configured with a proxy
+// Parameters:
+//   - proxy: URL of the proxy to use
+//   - timeout: Request timeout in seconds
+//
+// Returns:
+//   - *http.Client: Configured HTTP client
+func defaultClient(proxy *url.URL, timeout int) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxy),
+		},
+		Timeout: time.Duration(timeout) * time.Second,
 	}
-	defer rsp.Body.Close()
+}
 
-	body, err := io.ReadAll(rsp.Body)
-	r.Body = bytes.NewReader(body)
-	return r, err
+// makeRequest performs an HTTP request through a proxy server
+// Parameters:
+//   - target: Target URL to request
+//   - agent: User-Agent string to use
+//   - timeout: Request timeout in seconds
+//   - s: Server to use as proxy
+//
+// Returns:
+//   - []byte: Response body
+//   - error: Any error that occurred
+func makeRequest(target string, agent string, timeout int, s *Server) ([]byte, error) {
+	var startedAt time.Time
+	var err error
+
+	defer func() { s.RegisterFinish(startedAt, err) }()
+
+	startedAt = s.RegisterStart()
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", agent)
+	client := defaultClient(s.URL, timeout)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		err = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, err
+	}
+
+	b, err := io.ReadAll(resp.Body)
+	return b, err
 }
