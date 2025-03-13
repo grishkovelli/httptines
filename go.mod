@@ -3,8 +3,6 @@ module github.com/grishkovelli/httptines
 go 1.23.2
 
 require (
-	github.com/bsm/ginkgo/v2 v2.12.0
-	github.com/bsm/gomega v1.27.10
 	github.com/gorilla/websocket v1.5.3
 	github.com/onsi/ginkgo/v2 v2.22.2
 	github.com/onsi/gomega v1.36.2

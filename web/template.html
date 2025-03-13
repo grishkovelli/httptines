@@ -16,43 +16,36 @@
 </head>
 
 <body>
-  <div class="header">
-    <img src="static/logo.svg" alt="Girl in a jacket" width="140">
-    <a class="host" href="https://github.com/grishkovelli/httptines">http<b>tines</b> 1.0.0</a>
-  </div>
-
-  <div class="container col">
-
-    <div class="row">
-      <div class="stat m-3">
-        <h4>Stat</h4>
-        <table>
-          <tr>
-            <th>Progress</th>
-            <td id="progress" class="number"></td>
-          </tr>
-          <tr>
-            <th>RPM</th>
-            <td id="rpm" class="number"></td>
-          </tr>
-          <tr>
-            <th>Waiting</th>
-            <td id="waiting" class="number"></td>
-          </tr>
-          <tr>
-            <th>Proxies (alive/all)</th>
-            <td id="proxies" class="number"></td>
-          </tr>
-        </table>
+  <div class="content">
+    <div class="container col flex-center">
+      <img class="logo" src="static/logo.svg" onclick="window.open('https://github.com/grishkovelli/httptines','_blank')">
+      <div class="row block">
+        <div class="stat m-3">
+          <h4>Stat</h4>
+          <table>
+            <tr>
+              <th>Progress</th>
+              <td id="progress" class="number"></td>
+            </tr>
+            <tr>
+              <th>RPM</th>
+              <td id="rpm" class="number"></td>
+            </tr>
+            <tr>
+              <th>Proxies (alive)</th>
+              <td id="proxies" class="number"></td>
+            </tr>
+          </table>
+        </div>
+        <div class="log m-3">
+          <h4>Logs</h4>
+          <div id="log"></div>
+        </div>
       </div>
-      <div class="log m-3">
-        <h4>Logs</h4>
-        <div id="log"></div>
+      <div class="m-3">
+        <h4>Proxies stat</h4>
+        <table id="balancer"></table>
       </div>
-    </div>
-    <div class="m-3">
-      <h4>Proxies stat</h4>
-      <table id="balancer"></table>
     </div>
   </div>
 </body>

@@ -30,75 +30,57 @@ function connectWebSocket() {
 function handleStat(j) {
   const t = document.getElementById("balancer");
 
-  if (!j?.balancer) {
-    return;
-  }
-
-  const { targets, waiting, balancer: {
-    alive, proxies, rpm, positive
-  } } = j;
-  const eta = Math.round((targets - positive) / rpm);
+  const {
+    targets,
+    rpm,
+    processed,
+    servers,
+  } = j;
+  const eta = Math.round((targets - processed) / rpm);
 
   const progress = `
-          <div>${Math.round(
-            (positive * 100) / targets
-          )}% / ~${eta}min. </div>
-          <div>${positive} / ${targets}</div>
+          <div>${Math.round((processed * 100) / targets)}% / ~${eta}min. </div>
+          <div>${processed} / ${targets}</div>
         `;
 
   document.getElementById("progress").innerHTML = progress;
   document.getElementById("rpm").textContent = `${rpm}`;
-  document.getElementById("waiting").textContent = `${waiting}`;
 
-  if (alive) {
-    document.getElementById('proxies').textContent = `${alive.length} / ${proxies}`;
+  if (servers) {
+    document.getElementById('proxies').textContent = `${Object.keys(servers).length}`;
 
     t.innerHTML = `
-            <tr>
-              <th></th>
-              <th>URL</th>
-              <th>Latency (sec)</th>
-              <th>Capacity</th>
-              <th>Requests</th>
-              <th>Limit</th>
-              <th>Positive</th>
-              <th>Negative</th>
-            </tr>
-          `;
-    alive
-      .sort((a, b) => a.latency - b.latency)
-      .forEach(
-        (
-          {
-            url,
-            capacity,
-            latency,
-            requests,
-            limit,
-            positive,
-            negative,
-            negativePct,
-          },
-          idx
-        ) => {
-          const row = document.createElement("tr");
-          const trClass = negative >= positive ? positive : "cross";
+      <tr>
+        <th></th>
+        <th>URL</th>
+        <th>Latency (sec)</th>
+        <th>Efficiency (%)</th>
+        <th>Capacity</th>
+        <th>Requests</th>
+        <th>Positive</th>
+        <th>Negative</th>
+      </tr>
+    `;
 
-          row.innerHTML = `
-                <tr class="${trClass}">
-                  <td>${idx + 1}.</td>
-                  <td class="host">${url}</td>
-                  <td class="">${(latency / 1000).toFixed(1)}</td>
-                  <td class="">${capacity}</td>
-                  <td class="">${requests}</td>
-                  <td class="">${limit}</td>
-                  <td class="positive">${positive}</td>
-                  <td class="negative">${negativePct}% (${negative})</td>
-                </tr>
-              `;
-          t.appendChild(row);
-        }
-      );
+    Object.values(servers)
+      .sort((a, b) => b.positive - a.positive)
+      .forEach(({ url, disabled, latency, efficiency, capacity, requests, positive, negative }, idx) => {
+        const row = document.createElement("tr");
+
+        // row.classList.add(disabled ? "disabled" : "");
+
+        row.innerHTML = `
+          <td>${idx + 1}.</td>
+          <td class="host">${url}</td>
+          <td class="">${(latency / 1000).toFixed(1)}</td>
+          <td class="">${efficiency}</td>
+          <td class="">${capacity}</td>
+          <td class="">${requests}</td>
+          <td class="positive">${positive}</td>
+          <td class="negative">${negative}</td>
+        `;
+        t.appendChild(row);
+      });
   }
 }
 

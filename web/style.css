@@ -1,5 +1,4 @@
 body {
-  max-width: 720px;
   color: #f8f8f2;
   background-color: #49483E;
   font-family: monospace;
@@ -44,6 +43,11 @@ p {
   overflow: auto;
 }
 
+.content {
+  display: flex;
+  justify-content: center;
+}
+
 .container {
   max-width: 720px;
   padding: 6px;
@@ -82,17 +86,15 @@ p {
   color: red;
 }
 
-.header {
-  display: flex;
+.logo {
+  width: 180px;
+  cursor: pointer;
+}
+
+.block {
+  width: 100%;
+}
+
+.flex-center {
   align-items: center;
-  justify-content: space-around;
-  margin-bottom: 6px;
-}
-
-.header img {
-  width: 120px;
-}
-
-.header a {
-  font-size: 18px;
 }
