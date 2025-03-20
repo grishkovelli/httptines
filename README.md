@@ -1,8 +1,11 @@
 # httptines
 
-httptines is a powerful Go package for parsing websites using public proxy servers. It provides an efficient and flexible way to handle web scraping tasks with automatic proxy management, load balancing, and real-time monitoring.
+[![Go Reference](https://pkg.go.dev/badge/golang.org/x/example.svg)](https://pkg.go.dev/github.com/grishkovelli/httptines)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/grishkovelli/httptines/blob/master/LICENSE)
 
-<img src="screenshot.png" width="720">
+**httptines** is a powerful Go package for parsing websites using public proxy servers. It provides an efficient and flexible way to handle web scraping tasks with automatic proxy management, load balancing, and real-time monitoring.
+
+<img src="screenshot.png" width="480">
 
 ## Why
 
@@ -66,11 +69,6 @@ The `Worker` struct supports the following configuration options:
 | `PBuff` | int | 1000 | Buffer size for proxy processing |
 | `StatInterval` | int | 2 | Statistics update interval in seconds |
 | `Sources` | map[string][]string | required | Map of proxy source URLs grouped by schema |
-
-
-## License
-
-MIT License
 
 ## Contributing
 
