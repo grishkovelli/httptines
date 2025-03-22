@@ -100,7 +100,7 @@ func request(ctx context.Context, target string, s *Server) ([]byte, error) {
 
 	client := &http.Client{
 		Transport: &http.Transport{Proxy: http.ProxyURL(s.URL)},
-		Timeout:   time.Duration(cfg.timeout) * time.Second,
+		Timeout:   s.timeout,
 	}
 
 	resp, err := client.Do(req)

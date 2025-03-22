@@ -2,6 +2,7 @@ package httptines
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -27,12 +28,14 @@ func (s *Stat) MarshalJSON() ([]byte, error) {
 	type Alias Stat
 
 	return json.Marshal(&struct {
-		RPM       int `json:"rpm"`
-		Processed int `json:"processed"`
+		RPM       int    `json:"rpm"`
+		Processed int    `json:"processed"`
+		Elapsed   string `json:"elapsed"`
 		*Alias
 	}{
 		RPM:       s.rpm(),
 		Processed: len(s.timestamps),
+		Elapsed:   s.elapsed(),
 		Alias:     (*Alias)(s),
 	})
 }
@@ -43,11 +46,10 @@ func (s *Stat) MarshalJSON() ([]byte, error) {
 func (s *Stat) rpm() int {
 	rpm, lastMinute := 0, time.Now().Add(-time.Minute)
 	for i := len(s.timestamps) - 1; i >= 0; i-- {
-		if s.timestamps[i].Compare(lastMinute) >= 0 {
-			rpm++
-		} else {
+		if s.timestamps[i].Compare(lastMinute) < 0 {
 			break
 		}
+		rpm++
 	}
 	return rpm
 }
@@ -55,51 +57,36 @@ func (s *Stat) rpm() int {
 // addServer adds or updates server statistics
 // Parameters:
 //   - data: Map containing server statistics
-func (st *Stat) addServer(data map[string]any) {
-	st.m.Lock()
+func (s *Stat) addServer(data map[string]any) {
+	s.m.Lock()
 	if url, ok := data["url"].(string); ok {
-		st.Servers[url] = data
+		s.Servers[url] = data
 	}
-	st.m.Unlock()
+	s.m.Unlock()
 }
 
 // addTimestamp adds a timestamp for successful requests
 // Parameters:
 //   - t: Time of the successful request
-func (st *Stat) addTimestamp(t time.Time) {
-	st.m.Lock()
-	st.timestamps = append(st.timestamps, t)
-	st.m.Unlock()
+func (s *Stat) addTimestamp(t time.Time) {
+	s.m.Lock()
+	s.timestamps = append(s.timestamps, t)
+	s.m.Unlock()
 }
 
-// removeServer removes server statistics
-// Parameters:
-//   - u: URL of the server to remove
-func (st *Stat) removeServer(u string) {
-	st.m.Lock()
-	delete(st.Servers, u)
-	st.m.Unlock()
+func (s *Stat) allTargetsProcessed() bool {
+	s.m.RLock()
+	defer s.m.RUnlock()
+
+	return len(s.timestamps) == s.Targets
 }
 
-// updateStat processes statistics updates from channels
-func updateStat() {
-	for {
-		select {
-		case d := <-statCh:
-			stat.addServer(d)
-		case d := <-timeCh:
-			stat.addTimestamp(d)
-		}
+func (s *Stat) elapsed() string {
+	if tLen := len(s.timestamps); tLen > 1 {
+		elapsed := int(s.timestamps[tLen-1].Sub(s.timestamps[0]).Seconds())
+		minutes := elapsed / 60
+		seconds := elapsed % 60
+		return fmt.Sprintf("%02d:%02d", minutes, seconds)
 	}
-}
-
-// sendStatistics periodically broadcasts statistics to connected clients
-func sendStatistics() {
-	for {
-		stat.m.RLock()
-		p, _ := json.Marshal(Payload{"stat", stat})
-		broadcast <- p
-		stat.m.RUnlock()
-		time.Sleep(time.Duration(cfg.statInterval) * time.Second)
-	}
+	return "00:00"
 }

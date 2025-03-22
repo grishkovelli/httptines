@@ -28,9 +28,10 @@ function connectWebSocket() {
 }
 
 function handleStat(j) {
-  const t = document.getElementById("balancer");
+  const t = document.getElementById("servers");
 
   const {
+    elapsed,
     targets,
     rpm,
     processed,
@@ -40,7 +41,7 @@ function handleStat(j) {
 
   const progress = `
           <div>${Math.round((processed * 100) / targets)}% / ~${eta}min. </div>
-          <div>${processed} / ${targets}</div>
+          <div>${processed} / ${targets} / ${elapsed}</div>
         `;
 
   document.getElementById("progress").innerHTML = progress;

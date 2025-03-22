@@ -127,7 +127,7 @@ var _ = Describe("Stat", func() {
 				"url": "http://test-server.com",
 			}
 
-			statCh <- serverData
+			stsCh <- serverData
 
 			// Give goroutine time to process
 			time.Sleep(100 * time.Millisecond)
@@ -137,7 +137,7 @@ var _ = Describe("Stat", func() {
 		It("adds timestamp to stat", func() {
 			testTime := time.Now()
 
-			timeCh <- testTime
+			timCh <- testTime
 
 			// Give goroutine time to process
 			time.Sleep(100 * time.Millisecond)

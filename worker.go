@@ -2,6 +2,7 @@ package httptines
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,14 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-)
-
-var (
-	srvsCh = make(chan *Server, 500)          // Channel for server instances. TODO: make channel length configurable
-	statCh = make(chan map[string]any)        // Channel for statistics updates
-	timeCh = make(chan time.Time)             // Channel for time updates
-	stat   = &Stat{Servers: map[string]any{}} // Global statistics object
-	cfg    config                             // Global configuration
+	"unsafe"
 )
 
 // proxySrc represents a map of proxy source URLs grouped by schema
@@ -26,98 +20,109 @@ type proxySrc map[string][]string
 // proxyMap represents a set of proxy URLs
 type proxyMap map[*url.URL]bool
 
+// srvMap represents a map of server
+type srvMap map[string]any
+
 // Worker represents a worker instance that manages proxy servers and request processing
 type Worker struct {
-	// Interval specifies the time in seconds between proxy checks
+	// Interval defines the time (in seconds) between proxy downloads and health checks.
 	Interval int `default:"120"`
 	// Port specifies the HTTP server port for the web interface
 	Port int `default:"8080"`
-	// PBuff specifies the buffer size for proxy processing
-	PBuff int `default:"1000"`
-	// Sources contains a map of proxy source URLs grouped by schema (http/https)
+	// Workers determines the buffer size for proxy servers.
+	// - In "minimal" strategy, it represents the maximum number of concurrent connections.
+	// - In "auto" strategy, it defines the number of parent workers, while child workers
+	//   are dynamically allocated based on proxy server capacity.
+	//
+	// Example (minimal):
+	//   If Workers == 100, then max concurrent requests == 100.
+	//
+	// Example (auto):
+	//   If Workers == 50 and each proxy server supports 100 concurrent connections,
+	//   then max concurrent requests == 500.
+	Workers int `default:"100"`
+	// Sources contains a map of proxy source URLs grouped by schema (http/https/socks4/socks5)
 	Sources proxySrc `validate:"required"`
-	// StatInterval specifies the interval in seconds for statistics updates
+	// StatInterval defines the interval (in seconds) for updating statistics.
 	StatInterval int `default:"2"`
-	// Strategy specifies the proxy selection strategy (minimal/auto)
+	// Strategy determines the load balancing approach: "minimal" or "auto".
+	//
+	// - "minimal" Single-threaded mode, suitable for proxies with limited concurrency.
+	// - "auto" Dynamically adjusts concurrency based on proxy capabilities.
 	Strategy string `default:"minimal"`
 	// Timeout specifies the request timeout in seconds
 	Timeout int `default:"10"`
+	// URL used for testing the connection
+	TestTarget string `validate:"required"`
 
-	m       sync.RWMutex // Mutex for thread-safe operations
-	targets []string     // List of target URLs to process
+	srvCh   chan *Server   // Channel for server instances
+	timCh   chan time.Time // Channel for time updates
+	stsCh   chan srvMap    // Channel for statistics updates
+	m       sync.RWMutex   // Mutex for thread-safe operations
+	o       sync.Once      // Used to close srvCh
+	stat    *Stat          // Servers statistics
+	targets []string       // List of target URLs to process
 }
 
 // Run initializes and starts the worker with the given targets and handler function.
 // Parameters:
 //   - targets: List of URLs to process
-//   - testTarget: URL used for testing the connection
-//   - handleBody: Callback function to process the response body
-func (w *Worker) Run(targets []string, testTarget string, handleBody func([]byte)) {
+//   - handler: Callback function to process the response body
+func (w *Worker) Run(targets []string, handler func([]byte)) {
+
 	w.targets = targets
-	stat.Targets = len(targets)
+	w.stat = &Stat{Targets: len(targets), Servers: map[string]any{}}
+
+	w.srvCh = make(chan *Server, w.Workers)
+	w.stsCh = make(chan srvMap)
+	w.timCh = make(chan time.Time)
 
 	validate(w)
 	setDefaultValues(w)
 
-	cfg = config{
-		interval:     w.Interval,
-		pbuff:        w.PBuff,
-		sources:      w.Sources,
-		strategy:     w.Strategy,
-		testTarget:   testTarget,
-		timeout:      w.Timeout,
-		statInterval: w.StatInterval,
-	}
-
 	go listenAndServe(w.Port)
-	go fetchAndCheck()
-	go updateStat()
-	go sendStatistics()
+	go w.fetchAndCheck()
+	go w.updateStat()
+	go w.sendStatistics()
 
-	for {
-		size := w.size()
-
-		if size < 1 {
-			fmt.Println("No items")
-			break
-		}
-
-		for s := range srvsCh {
-			go handleServer(w, s, handleBody)
-		}
+	for s := range w.srvCh {
+		go handleServer(w, s, handler)
 	}
+
+	// Waiting for last send statistics
+	time.Sleep(time.Duration(w.StatInterval) * time.Second)
 }
 
 // handleServer processes requests for a specific proxy server
 // Parameters:
 //   - w: The worker instance managing the proxy servers
 //   - s: The server instance to handle requests for
-//   - handleBody: Callback function to process the response body
-func handleServer(w *Worker, s *Server, handleBody func([]byte)) {
-	defer func() { stat.removeServer(s.URL.String()) }()
-	cap := s.Capacity
-	queue := make(chan any, cap)
+//   - handler: Callback function to process the response body
+func handleServer(w *Worker, s *Server, handler func([]byte)) {
+	ca := s.Capacity
+	qu := make(chan any, ca)
 
 	for {
-		targets := w.shift(cap)
-
-		if len(targets) == 0 || atomic.LoadUint32(&s.Disabled) > 0 {
+		if atomic.LoadUint32(&s.Disabled) > 0 {
 			break
 		}
 
+		targets := w.shift(ca)
+		if len(targets) == 0 {
+			if w.stat.allTargetsProcessed() {
+				w.o.Do(func() {
+					close(w.srvCh)
+				})
+				break
+			}
+
+			time.Sleep(time.Second)
+			continue
+		}
+
 		for _, t := range targets {
-			queue <- struct{}{}
-
-			go func(t string) {
-				defer func() { <-queue }()
-
-				body, err := processTarget(t, s)
-				if err != nil {
-					w.retrigger(t)
-				} else {
-					handleBody(body)
-				}
-			}(t)
+			qu <- struct{}{}
+			go processTarget(w, t, s, qu, handler)
 		}
 	}
 }
@@ -160,18 +165,46 @@ func (w *Worker) size() int {
 	return len(w.targets)
 }
 
+// updateStat processes statistics updates from channels
+func (w *Worker) updateStat() {
+	for {
+		select {
+		case d := <-w.stsCh:
+			w.stat.addServer(d)
+		case d := <-w.timCh:
+			w.stat.addTimestamp(d)
+		}
+	}
+}
+
+// sendStatistics periodically broadcasts statistics to connected clients
+func (w *Worker) sendStatistics() {
+	for {
+		w.stat.m.RLock()
+		p, _ := json.Marshal(Payload{"stat", w.stat})
+		broadcast <- p
+		w.stat.m.RUnlock()
+
+		time.Sleep(time.Duration(w.Timeout) * time.Second)
+	}
+}
+
 // fetchAndCheck periodically fetches and validates proxy servers
 // It runs in a separate goroutine and performs the following tasks:
 // 1. Fetches proxy lists from configured sources
 // 2. Validates each proxy's connectivity and performance
 // 3. Updates the server channel with working proxies
-func fetchAndCheck() {
-	ticker := time.NewTicker(time.Duration(cfg.interval) * time.Second)
+// Parameters:
+//   - w: Worker
+func (w *Worker) fetchAndCheck() {
+	ticker := time.NewTicker(time.Duration(w.Interval) * time.Second)
 	defer ticker.Stop()
 
 	for {
-		proxies := fetchProxies(cfg.sources)
-		checkProxies(proxies)
+		proxies := fetchProxies(w.Sources)
+		for _, s := range checkProxies(w, proxies) {
+			w.srvCh <- s
+		}
 		<-ticker.C
 	}
 }
@@ -231,19 +264,19 @@ func fetchProxies(s proxySrc) proxyMap {
 // 1. Tests each proxy's connectivity using the configured test target
 // 2. Determines optimal capacity based on the selected strategy
 // 3. Sends working proxies to the server channel
-func checkProxies(proxies proxyMap) {
+func checkProxies(w *Worker, proxies proxyMap) []*Server {
 	var alive []*Server
 	var mu sync.Mutex
 	var count uint32
 
-	ch := make(chan any, cfg.pbuff)
+	ch := make(chan any, w.Workers)
 
 	if len(proxies) == 0 {
 		wlog("no proxies to check")
-		return
+		return nil
 	}
 
-	wlog(fmt.Sprintf("%s strategy was applied", cfg.strategy))
+	wlog(fmt.Sprintf("%s strategy was applied", w.Strategy))
 	wlog(fmt.Sprintf("checking %d proxies", len(proxies)))
 
 	for u := range proxies {
@@ -255,9 +288,13 @@ func checkProxies(proxies proxyMap) {
 				atomic.AddUint32(&count, 1)
 			}()
 
-			s := &Server{URL: u}
+			s := &Server{
+				URL:     u,
+				timeout: time.Duration(w.Timeout) * time.Second,
+			}
+
 			s.ctx, s.cancel = context.WithCancel(context.Background())
-			s.computeCapacity(cfg.testTarget)
+			s.computeCapacity(w.Strategy, w.TestTarget)
 			if s.Capacity > 0 {
 				mu.Lock()
 				alive = append(alive, s)
@@ -273,22 +310,60 @@ func checkProxies(proxies proxyMap) {
 
 	wlog(fmt.Sprintf("Found %d alive proxies", len(alive)))
 
-	for _, s := range alive {
-		srvsCh <- s
-	}
+	// Size of slice header (3 words: pointer, length, capacity)
+	headerSize := unsafe.Sizeof(alive)
+	// Size of the underlying array (capacity * size of one element)
+	dataSize := uintptr(cap(alive)) * unsafe.Sizeof(alive[0])
+	totalSize := headerSize + dataSize
+
+	fmt.Printf("Slice header size: %d bytes\n", headerSize)
+	fmt.Printf("Underlying array size: %d bytes\n", dataSize)
+	fmt.Printf("Total slice size: %d bytes\n", totalSize)
+
+	return alive
+}
+
+func (w *Worker) stop() {
+	w.o.Do(func() {
+		close(w.srvCh)
+	})
 }
 
 // processTarget processes a target URL using the provided proxy server and returns the response body.
 // Parameters:
-//   - target: URL to process
+//   - w: Worker
+//   - t: URL to process
 //   - s: Server to use for the request
 //
 // Returns:
 //   - []byte: Response body
 //   - error: Any error that occurred
-func processTarget(target string, s *Server) ([]byte, error) {
-	startedAt := s.start()
-	body, err := request(s.ctx, target, s)
-	s.finish(startedAt, err)
+func processTarget(
+	w *Worker,
+	t string,
+	s *Server,
+	q <-chan any,
+	handler func([]byte),
+) ([]byte, error) {
+	defer func() { <-q }()
+
+	startedAt, sm := s.start()
+	if v, _ := sm["disabled"]; v.(uint32) == 0 {
+		w.stsCh <- sm
+	}
+
+	body, err := request(s.ctx, t, s)
+	sm = s.finish(startedAt, err)
+	if err != nil {
+		w.retrigger(t)
+	} else {
+		handler(body)
+		w.timCh <- time.Now()
+	}
+
+	if v, _ := sm["disabled"]; v.(uint32) == 0 {
+		w.stsCh <- sm
+	}
+
 	return body, err
 }

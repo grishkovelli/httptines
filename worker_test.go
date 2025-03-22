@@ -25,7 +25,7 @@ var _ = Describe("Worker", func() {
 		w = &Worker{
 			Interval:     120,
 			Port:         8080,
-			PBuff:        1000,
+			Workers:      1000,
 			StatInterval: 2,
 			Strategy:     "minimal",
 			Timeout:      10,
@@ -37,7 +37,7 @@ var _ = Describe("Worker", func() {
 
 		cfg = config{
 			interval: w.Interval,
-			pbuff:    w.PBuff,
+			Workers:  w.Workers,
 			sources:  w.Sources,
 			strategy: w.Strategy,
 			timeout:  w.Timeout,

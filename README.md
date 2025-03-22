@@ -3,24 +3,34 @@
 [![Go Reference](https://pkg.go.dev/badge/golang.org/x/example.svg)](https://pkg.go.dev/github.com/grishkovelli/httptines)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/grishkovelli/httptines/blob/master/LICENSE)
 
-**httptines** is a powerful Go package for parsing websites using public proxy servers. It provides an efficient and flexible way to handle web scraping tasks with automatic proxy management, load balancing, and real-time monitoring.
+**httptines** is a powerful Go package for sending HTTP requests using proxy servers. It provides an efficient and flexible way to handle web scraping tasks with automatic proxy management, load balancing, and real-time monitoring. The solution is highly concurrent and can handle thousands of simultaneous requests.
 
-<img src="screenshot.png" width="480">
-
-## Why
-
-To better understand concurrency in Go.
+<img src="screenshot.png" width="420">
 
 ## Features
 
-- **Automatic Proxy Management**: Automatically fetches and validates proxy servers from multiple sources
-- **Load Balancing**: Two strategies for proxy server utilization:
-  - **Minimal Strategy**: Single-threaded mode, ideal for proxies with limited concurrent connections
-  - **Auto Strategy**: Automatically determines optimal concurrent connections per proxy
-- **Real-time Monitoring**: Web interface for monitoring proxy performance and statistics
-- **Robust Error Handling**: Automatic proxy rotation and retry mechanism
-- **Configurable Timeouts**: Customizable request timeouts
-- **User Agent Rotation**: Built-in user agent rotation to avoid detection
+- Automatic proxy management and validation
+- Smart load balancing with **minimal** and **auto** strategies
+- Real-time monitoring via web interface
+- User agent rotation and retry mechanism
+
+## Automatic Proxy Management
+
+The package automatically fetches and validates proxy servers from multiple sources. It continuously monitors proxy health and performance, automatically removing failing proxies and adjusting load based on their capabilities.
+
+## Load Balancing
+
+Two strategies are available for proxy utilization:
+- **Minimal Strategy**: Single-threaded mode, ideal for proxies with limited concurrent connections
+- **Auto Strategy**: Automatically determines optimal concurrent connections per proxy
+
+## Real-time Monitoring
+
+A built-in web interface provides real-time insights into:
+- Proxy performance and health
+- Success/failure rates
+- Request latency
+- Current throughput
 
 ## Installation
 
@@ -28,12 +38,17 @@ To better understand concurrency in Go.
 go get github.com/grishkovelli/httptines
 ```
 
-## Usage
+## Example
 
 ```go
 w := httptines.Worker{
-    Strategy: "minimal",  // or "auto"
-    Timeout:  5,         // request timeout in seconds
+    // Proxy selection strategy ("minimal" or "auto")
+    Strategy: "minimal",
+
+    // Request timeout in seconds (default: 10)
+    Timeout:  5,
+
+    // Proxy source URLs grouped by schema
     Sources: map[string][]string{
         "http": {
             "https://proxy-source-1/http.txt",
@@ -41,7 +56,12 @@ w := httptines.Worker{
             "https://proxy-source-3/http.txt",
         },
     },
-    Interval: 300,       // proxy check interval in seconds
+
+    // Optional configuration
+    Interval: 300,      // proxy check interval in seconds (default: 120)
+    Port: 8080,        // HTTP server port for web interface (default: 8080)
+    Workers: 1000,       // Buffer size for proxy processing (default: 1000)
+    StatInterval: 2,    // Statistics update interval in seconds (default: 2)
 }
 
 targets := []string{
@@ -55,20 +75,6 @@ w.Run(targets, "https://target.com", func(body []byte) {
     // e.g., parse HTML, extract data, write to database
 })
 ```
-
-### Configuration Options
-
-The `Worker` struct supports the following configuration options:
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `Strategy` | string | "minimal" | Proxy selection strategy ("minimal" or "auto") |
-| `Timeout` | int | 10 | Request timeout in seconds |
-| `Interval` | int | 120 | Time between proxy checks in seconds |
-| `Port` | int | 8080 | HTTP server port for web interface |
-| `PBuff` | int | 1000 | Buffer size for proxy processing |
-| `StatInterval` | int | 2 | Statistics update interval in seconds |
-| `Sources` | map[string][]string | required | Map of proxy source URLs grouped by schema |
 
 ## Contributing
 
