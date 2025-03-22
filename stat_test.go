@@ -9,59 +9,54 @@ import (
 )
 
 var _ = Describe("Stat", func() {
+	var w *Worker
+
 	BeforeEach(func() {
-		stat = &Stat{
-			Targets: 100,
-			Servers: make(map[string]any),
+		w = &Worker{
+			stat: &Stat{
+				Targets: 100,
+				Servers: map[string]srvMap{},
+			},
+			stsCh: make(chan srvMap),
+			timCh: make(chan time.Time),
 		}
 	})
 
 	Describe("addServer()", func() {
 		It("adds server statistics", func() {
-			serverData := map[string]any{
+			serverData := srvMap{
 				"url":      "http://test-server.com",
 				"latency":  100,
 				"requests": 10,
 			}
-			stat.addServer(serverData)
-			Expect(stat.Servers).To(HaveKeyWithValue("http://test-server.com", serverData))
+			w.stat.addServer(serverData)
+			Expect(w.stat.Servers).To(HaveKeyWithValue("http://test-server.com", serverData))
 		})
 
 		It("updates existing server statistics", func() {
-			initialData := map[string]any{
+			initialData := srvMap{
 				"url":      "http://test-server.com",
 				"latency":  100,
 				"requests": 10,
 			}
-			stat.addServer(initialData)
+			w.stat.addServer(initialData)
 
-			updatedData := map[string]any{
+			updatedData := srvMap{
 				"url":      "http://test-server.com",
 				"latency":  200,
 				"requests": 20,
 			}
-			stat.addServer(updatedData)
+			w.stat.addServer(updatedData)
 
-			Expect(stat.Servers).To(HaveKeyWithValue("http://test-server.com", updatedData))
-		})
-	})
-
-	Describe("removeServer()", func() {
-		It("removes existing server", func() {
-			serverData := map[string]any{
-				"url": "http://test-server.com",
-			}
-			stat.addServer(serverData)
-			stat.removeServer("http://test-server.com")
-			Expect(stat.Servers).NotTo(HaveKey("http://test-server.com"))
+			Expect(w.stat.Servers).To(HaveKeyWithValue("http://test-server.com", updatedData))
 		})
 	})
 
 	Describe("addTimestamp()", func() {
 		It("adds timestamp to the list", func() {
 			testTime := time.Now()
-			stat.addTimestamp(testTime)
-			Expect(stat.timestamps).To(ContainElement(testTime))
+			w.stat.addTimestamp(testTime)
+			Expect(w.stat.timestamps).To(ContainElement(testTime))
 		})
 
 		It("maintains order of timestamps", func() {
@@ -69,41 +64,41 @@ var _ = Describe("Stat", func() {
 			time2 := time.Now().Add(time.Second)
 			time3 := time.Now()
 
-			stat.addTimestamp(time1)
-			stat.addTimestamp(time2)
-			stat.addTimestamp(time3)
+			w.stat.addTimestamp(time1)
+			w.stat.addTimestamp(time2)
+			w.stat.addTimestamp(time3)
 
-			Expect(stat.timestamps).To(Equal([]time.Time{time1, time2, time3}))
+			Expect(w.stat.timestamps).To(Equal([]time.Time{time1, time2, time3}))
 		})
 	})
 
 	Describe("rpm()", func() {
 		When("no timestamps", func() {
 			It("returns 0", func() {
-				Expect(stat.rpm()).To(Equal(0))
+				Expect(w.stat.rpm()).To(Equal(0))
 			})
 		})
 
 		It("returns count requests within last minute", func() {
 			now := time.Now()
-			stat.addTimestamp(now.Add(-2 * time.Minute))
-			stat.addTimestamp(now.Add(-30 * time.Second))
-			stat.addTimestamp(now)
+			w.stat.addTimestamp(now.Add(-2 * time.Minute))
+			w.stat.addTimestamp(now.Add(-30 * time.Second))
+			w.stat.addTimestamp(now)
 
-			Expect(stat.rpm()).To(Equal(2))
+			Expect(w.stat.rpm()).To(Equal(2))
 		})
 	})
 
 	Describe("MarshalJSON()", func() {
 		It("marshals statistics to JSON", func() {
 			now := time.Now()
-			stat.addTimestamp(now.Add(-30 * time.Second))
-			stat.addTimestamp(now)
-			stat.addServer(map[string]any{
+			w.stat.addTimestamp(now.Add(-30 * time.Second))
+			w.stat.addTimestamp(now)
+			w.stat.addServer(srvMap{
 				"url": "http://test-server.com",
 			})
 
-			data, err := json.Marshal(stat)
+			data, err := json.Marshal(w.stat)
 			Expect(err).NotTo(HaveOccurred())
 
 			var result map[string]interface{}
@@ -119,29 +114,29 @@ var _ = Describe("Stat", func() {
 
 	Describe("updateStat()", func() {
 		BeforeEach(func() {
-			go updateStat()
+			go w.updateStat()
 		})
 
 		It("adds server to stat", func() {
-			serverData := map[string]any{
+			serverData := srvMap{
 				"url": "http://test-server.com",
 			}
 
-			statCh <- serverData
+			w.stsCh <- serverData
 
 			// Give goroutine time to process
-			time.Sleep(100 * time.Millisecond)
-			Expect(stat.Servers).To(HaveKeyWithValue("http://test-server.com", serverData))
+			time.Sleep(200 * time.Millisecond)
+			Expect(w.stat.Servers).To(HaveKeyWithValue("http://test-server.com", serverData))
 		})
 
 		It("adds timestamp to stat", func() {
 			testTime := time.Now()
 
-			timeCh <- testTime
+			w.timCh <- testTime
 
 			// Give goroutine time to process
-			time.Sleep(100 * time.Millisecond)
-			Expect(stat.timestamps).To(ContainElement(testTime))
+			time.Sleep(200 * time.Millisecond)
+			Expect(w.stat.timestamps).To(ContainElement(testTime))
 		})
 	})
 })

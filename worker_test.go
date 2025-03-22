@@ -25,7 +25,7 @@ var _ = Describe("Worker", func() {
 		w = &Worker{
 			Interval:     120,
 			Port:         8080,
-			PBuff:        1000,
+			Workers:      1000,
 			StatInterval: 2,
 			Strategy:     "minimal",
 			Timeout:      10,
@@ -33,14 +33,13 @@ var _ = Describe("Worker", func() {
 				"http":  {"http://test-proxy-list.com/http"},
 				"https": {"http://test-proxy-list.com/https"},
 			},
-		}
-
-		cfg = config{
-			interval: w.Interval,
-			pbuff:    w.PBuff,
-			sources:  w.Sources,
-			strategy: w.Strategy,
-			timeout:  w.Timeout,
+			stat: &Stat{
+				Targets: 100,
+				Servers: map[string]srvMap{},
+			},
+			srvCh: make(chan *Server, 100),
+			stsCh: make(chan srvMap),
+			timCh: make(chan time.Time),
 		}
 	})
 
@@ -70,18 +69,6 @@ var _ = Describe("Worker", func() {
 		})
 	})
 
-	Describe("size()", func() {
-		It("returns 0 for empty targets", func() {
-			w.targets = []string{}
-			Expect(w.size()).To(Equal(0))
-		})
-
-		It("returns correct size", func() {
-			w.targets = []string{"http://test1.com", "http://test2.com", "http://test3.com"}
-			Expect(w.size()).To(Equal(3))
-		})
-	})
-
 	Describe("retrigger()", func() {
 		It("appends URL to targets", func() {
 			w.targets = []string{"http://test1.com"}
@@ -100,6 +87,7 @@ var _ = Describe("Worker", func() {
 		BeforeEach(func() {
 			target = mockHTTPServer("")
 			proxy, proxyURL = mockProxyServer(0)
+			w.TestTarget = target.URL
 		})
 
 		AfterEach(func() {
@@ -107,14 +95,11 @@ var _ = Describe("Worker", func() {
 			proxy.Close()
 		})
 
-		It("should process valid proxy URLs", func() {
-			cfg.testTarget = target.URL
+		It("returns alive proxy", func() {
 			proxies := proxyMap{proxyURL: true}
+			alive := w.checkProxies(proxies)
 
-			checkProxies(proxies)
-			srv := <-srvsCh
-
-			Expect(srv.URL).To(Equal(proxyURL))
+			Expect(alive[0].URL).To(Equal(proxyURL))
 		})
 	})
 
@@ -141,16 +126,14 @@ var _ = Describe("Worker", func() {
 		})
 
 		It("handles all targets", func() {
-			Expect(w.size()).To(Equal(3))
-
 			result := []string{}
-			go handleServer(w, srv, func(b []byte) {
+			go w.updateStat()
+			go w.handleServer(srv, func(b []byte) {
 				result = append(result, string(b))
 			})
 
-			time.Sleep(500 * time.Millisecond) // Give goroutine time to process
+			time.Sleep(time.Second) // Give goroutine time to process
 
-			Expect(w.size()).To(Equal(0))
 			Expect(result).To(Equal([]string{"good", "good", "good"}))
 		})
 	})
@@ -159,13 +142,13 @@ var _ = Describe("Worker", func() {
 // Helpers
 
 func mockHTTPServer(body string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(10 * time.Millisecond)
 		w.Write([]byte(body))
 	}))
 }
 
-func mockProxyServer(delay time.Duration) (*httptest.Server, *url.URL) {
+func mockProxyServer(delay int) (*httptest.Server, *url.URL) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp, err := http.Get(r.URL.String()) // Forward the request to the target
 		if err != nil {
@@ -173,7 +156,7 @@ func mockProxyServer(delay time.Duration) (*httptest.Server, *url.URL) {
 			return
 		}
 
-		time.Sleep(delay * time.Millisecond)
+		time.Sleep(time.Duration(delay) * time.Millisecond)
 
 		// Copy the response from the target
 		body, _ := io.ReadAll(resp.Body)

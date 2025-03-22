@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Global variables for web server management
+// Global variables for web server management.
 var (
 	upgrader  = websocket.Upgrader{}           // WebSocket connection upgrader
 	clients   = make(map[*websocket.Conn]bool) // Connected WebSocket clients
@@ -20,7 +20,7 @@ var (
 	wsm       sync.Mutex                       // Mutex for client map access
 )
 
-// Payload represents the structure of WebSocket messages
+// Payload represents the structure of WebSocket messages.
 type Payload struct {
 	Kind string `json:"kind"` // Type of the message
 	Body any    `json:"body"` // Content of the message
@@ -60,7 +60,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	wsm.Unlock()
 }
 
-// handleMessages processes incoming messages from the broadcast channel
+// handleMessages processes incoming messages from the broadcast channel.
 func handleMessages() {
 	for {
 		msg := <-broadcast
@@ -87,7 +87,9 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
-	t.Execute(w, "ws://"+r.Host+"/ws")
+	if err = t.Execute(w, "ws://"+r.Host+"/ws"); err != nil {
+		panic(err)
+	}
 }
 
 // absolutePath returns the absolute path to the web directory

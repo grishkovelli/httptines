@@ -34,7 +34,7 @@ func setDefaultValues(obj interface{}) {
 	tof := reflect.TypeOf(obj).Elem()
 	vof := reflect.ValueOf(obj).Elem()
 
-	for i := 0; i < vof.NumField(); i++ {
+	for i := range vof.NumField() {
 		vf := vof.Field(i)
 		v := tof.Field(i).Tag.Get("default")
 
@@ -65,7 +65,7 @@ func validate(obj interface{}) {
 	tof := reflect.TypeOf(obj).Elem()
 	vof := reflect.ValueOf(obj).Elem()
 
-	for i := 0; i < vof.NumField(); i++ {
+	for i := range vof.NumField() {
 		tf := tof.Field(i)
 		vf := vof.Field(i)
 
@@ -75,7 +75,7 @@ func validate(obj interface{}) {
 		}
 
 		if strings.Contains(v, "required") && vf.IsZero() {
-			fmt.Printf("Field \"%s\" is required\n", tf.Name)
+			wlog(fmt.Sprintf("Field \"%s\" is required", tf.Name))
 			os.Exit(0)
 		}
 	}
@@ -91,7 +91,7 @@ func validate(obj interface{}) {
 //   - []byte: Response body
 //   - error: Any error that occurred
 func request(ctx context.Context, target string, s *Server) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func request(ctx context.Context, target string, s *Server) ([]byte, error) {
 
 	client := &http.Client{
 		Transport: &http.Transport{Proxy: http.ProxyURL(s.URL)},
-		Timeout:   time.Duration(cfg.timeout) * time.Second,
+		Timeout:   s.timeout,
 	}
 
 	resp, err := client.Do(req)

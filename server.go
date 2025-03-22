@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Server represents a proxy server with its current state and performance metrics
+// Server represents a proxy server with its current state and performance metrics.
 type Server struct {
 	// URL is the proxy server's URL
 	URL *url.URL `json:"url"`
@@ -26,6 +26,12 @@ type Server struct {
 	// Negative is the count of failed requests processed by this server
 	Negative int `json:"negative"`
 
+	// The array used to determine 5 fail in row
+	l5 [5]bool
+	// The value is used as an index for update the l5 array
+	l5i int
+	// Timeout specifies the request timeout in seconds
+	timeout time.Duration
 	// m is a mutex for protecting concurrent access to server data
 	m sync.RWMutex
 	// ctx is the context for managing server lifecycle
@@ -37,75 +43,53 @@ type Server struct {
 // Start marks the beginning of a request and returns the start time
 // Returns:
 //   - time.Time: The timestamp when the request started
-func (s *Server) start() time.Time {
+func (s *Server) start() (time.Time, srvMap) {
 	s.m.Lock()
 	defer s.m.Unlock()
 
 	s.Requests++
 
-	if !s.fiveFailInRow() {
-		select {
-		case statCh <- s.toMap():
-		default:
-		}
-	}
-
-	return time.Now()
+	return time.Now(), s.toMap()
 }
 
 // finish records the completion of a request
 // Parameters:
 //   - startedAt: The timestamp when the request started
 //   - err: Any error that occurred during the request
-func (s *Server) finish(startedAt time.Time, err error) {
+func (s *Server) finish(startedAt time.Time, err error) srvMap {
 	s.m.Lock()
 	defer s.m.Unlock()
 
-	s.updateStat(startedAt, err)
-
-	if err == nil {
-		select {
-		case timeCh <- time.Now():
-		default:
-		}
-	}
-
-	if s.fiveFailInRow() {
-		s.disable()
-	} else {
-		select {
-		case statCh <- s.toMap():
-		default:
-		}
-	}
-}
-
-// updateStat updates server statistics based on request completion
-// Parameters:
-//   - startedAt: The timestamp when the request started
-//   - err: Any error that occurred during the request
-func (s *Server) updateStat(startedAt time.Time, err error) {
 	s.Latency = int(time.Since(startedAt).Milliseconds())
 	s.Requests--
 
 	if err == nil {
 		s.Positive++
+		s.l5[s.l5i] = true
+		s.updateL5(true)
 	} else {
 		s.Negative++
+		s.updateL5(false)
 	}
+
+	if s.fiveFailInRow() {
+		s.disable()
+	}
+
+	return s.toMap()
 }
 
-// disable disables the server and cancels its context
+// disable disables the server and cancels its context.
 func (s *Server) disable() {
-	s.cancel()
 	atomic.AddUint32(&s.Disabled, 1)
+	s.cancel()
 }
 
 // toMap converts server statistics to a map
 // Returns:
-//   - map[string]any: Server statistics as a map
-func (s *Server) toMap() map[string]any {
-	return map[string]any{
+//   - srvMap: Server statistics as a map
+func (s *Server) toMap() srvMap {
+	return srvMap{
 		"url":        s.URL.String(),
 		"disabled":   s.Disabled,
 		"latency":    s.Latency,
@@ -132,14 +116,20 @@ func (s *Server) efficiency() float64 {
 // Returns:
 //   - bool: True if server has failed five times in a row
 func (s *Server) fiveFailInRow() bool {
-	return s.Negative > 4 && s.Positive == 0
+	for i := range s.l5 {
+		if s.l5[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // computeCapacity determines the server's capacity based on the configured strategy
 // Parameters:
+//   - strategy: Strategy minimal or auto
 //   - target: URL to test capacity against
-func (s *Server) computeCapacity(target string) {
-	if cfg.strategy == "minimal" {
+func (s *Server) computeCapacity(strategy, target string) {
+	if strategy == "minimal" {
 		s.minimalCapacity(target)
 	} else {
 		s.autoAdjustCapacity(target)
@@ -157,7 +147,7 @@ func (s *Server) autoAdjustCapacity(target string) {
 	defer cancel()
 
 	for {
-		for i := uint32(0); i < capacity; i++ {
+		for range capacity {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -191,5 +181,18 @@ func (s *Server) minimalCapacity(target string) {
 
 	if _, err := request(ctx, target, s); err == nil {
 		s.Capacity = 1
+	}
+}
+
+// updateL5 updates the server's l5 array
+// Parameters:
+//   - v: Value
+func (s *Server) updateL5(v bool) {
+	s.l5[s.l5i] = v
+
+	if s.l5i == len(s.l5)-1 {
+		s.l5i = 0
+	} else {
+		s.l5i++
 	}
 }

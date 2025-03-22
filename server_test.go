@@ -25,7 +25,7 @@ var _ = Describe("Server", func() {
 			cancel: cancel,
 		}
 
-		go updateStat()
+		// go updateStat()
 	})
 
 	Describe("start()", func() {
@@ -35,8 +35,8 @@ var _ = Describe("Server", func() {
 		})
 
 		It("returns current time", func() {
-			startTime := server.start()
-			Expect(startTime).To(BeTemporally("~", time.Now(), time.Second))
+			t, _ := server.start()
+			Expect(t).To(BeTemporally("~", time.Now(), time.Second))
 		})
 	})
 
@@ -85,24 +85,14 @@ var _ = Describe("Server", func() {
 	Describe("fiveFailInRow()", func() {
 		When("5 consecutive failures", func() {
 			It("returns true", func() {
-				server.Positive = 0
-				server.Negative = 5
+				server.l5 = [5]bool{false, false, false, false, false}
 				Expect(server.fiveFailInRow()).To(BeTrue())
 			})
 		})
 
 		When("less than 5 failures", func() {
 			It("return false", func() {
-				server.Positive = 0
-				server.Negative = 4
-				Expect(server.fiveFailInRow()).To(BeFalse())
-			})
-		})
-
-		When("successful requests exists", func() {
-			It("returns false", func() {
-				server.Positive = 1
-				server.Negative = 5
+				server.l5 = [5]bool{false, false, false, false, true}
 				Expect(server.fiveFailInRow()).To(BeFalse())
 			})
 		})

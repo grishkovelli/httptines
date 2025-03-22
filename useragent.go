@@ -2,7 +2,7 @@ package httptines
 
 import "math/rand"
 
-// ua is a global variable containing a list of user agent strings for HTTP requests
+// ua is a global variable containing a list of user agent strings for HTTP requests.
 var ua = userAgent{
 	agents: []string{
 		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
@@ -23,7 +23,7 @@ var ua = userAgent{
 	},
 }
 
-// userAgent represents a collection of user agent strings
+// userAgent represents a collection of user agent strings.
 type userAgent struct {
 	agents []string
 }
